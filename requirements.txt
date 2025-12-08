@@ -1,0 +1,9 @@
+torch>=2.0.0
+torchvision
+diffusers
+transformers
+accelerate
+tqdm
+numpy
+Pillow
+einops
