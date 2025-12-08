@@ -7,6 +7,7 @@ from utils.dataset import LatentDataset
 import argparse
 import os
 from tqdm import tqdm
+import csv
 
 def train(args):
     # 1. Setup Device
@@ -24,9 +25,25 @@ def train(args):
     dataset = LatentDataset(args.data_dir)
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4) # num_workers can be tuned
 
+    # 在 train 函数开始处，创建日志文件
+    log_dir = "logs"
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, f"{args.exp_name}_log.csv")
+    
+    # 初始化 CSV
+    with open(log_file, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["epoch", "loss"]) # 表头
+
+    print(f"Start Training Experiment: {args.exp_name}")
+
     # 4. Training Loop
     for epoch in range(args.epochs):
-        pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
+        model.train()
+        epoch_loss = 0.0
+        steps = 0
+        
+        pbar = tqdm(dataloader)
         for latents, labels in pbar:
             latents = latents.to(device)
             labels = labels.to(device)
@@ -77,9 +94,18 @@ def train(args):
             loss.backward()
             optimizer.step()
             
+            # 累加 Loss 用于记录平均值
+            epoch_loss += loss.item()
+            steps += 1
             pbar.set_description(f"Ep {epoch} | Loss: {loss.item():.4f}")
             
-        # Save Checkpoint
+        # --- 新增：计算平均 Loss 并写入文件 ---
+        avg_loss = epoch_loss / steps
+        with open(log_file, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([epoch, avg_loss])
+        
+        # Save Checkpoint (保持不变)
         if epoch % 10 == 0 or epoch == args.epochs - 1:
             os.makedirs("checkpoints", exist_ok=True)
             torch.save(model.state_dict(), f"checkpoints/{args.exp_name}_ep{epoch}.pth")
