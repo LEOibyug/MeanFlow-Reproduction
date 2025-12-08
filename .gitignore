@@ -1,2 +1,7 @@
 # 忽略 data 目录下的一切
 data/
+checkpoints/
+logs/
+*.log
+*.out
+*.pyc
