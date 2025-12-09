@@ -9,7 +9,5 @@ mkdir -p checkpoints
 CUDA_VISIBLE_DEVICES=0 python train.py \
     --exp_name exp_cfg \
     --data_dir data/latents \
-    --batch_size 1024 \
-    --epochs 200 \
     --use_cfg \
     --gpu_id 0

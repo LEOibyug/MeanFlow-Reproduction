@@ -75,18 +75,27 @@ def train(args):
         B = x.shape[0]
         
         # 构造时间 t, r
-        t = torch.rand(B, device=device)
+        t_raw = torch.rand(B, device=device)
+        r_raw = torch.rand(B, device=device)
+        
         if args.baseline:
-            r = t # Baseline: target is instantaneous velocity
+            # Baseline: t 和 r 是一样的
+            t = t_raw
+            r = t_raw
         else:
-            r = torch.rand(B, device=device) # MeanFlow: target is average velocity
+            # MeanFlow: 必须保证 t (当前/噪声侧) > r (目标/数据侧)
+            t = torch.max(t_raw, r_raw)
+            r = torch.min(t_raw, r_raw)
             
-        # 构造加噪样本 z_t
-        # Flow Matching: z_t = (1-t)x + t*eps
-        # 注意: 这里的 t=0 是数据，t=1 是噪声 (符合论文)
+            # 避免 t 和 r 过于接近导致数值不稳定 (可选，但推荐)
+            # 强制最小间隔 1e-3
+            r = torch.clamp(r, max=t - 1e-3)
+
+        # 构造加噪样本 (注意：t=1 是纯噪声，t=0 是纯数据)
+        # z_t = (1-t)x + t*eps
         eps = torch.randn_like(x)
         z_t = (1 - t.view(B, 1, 1, 1)) * x + t.view(B, 1, 1, 1) * eps
-        v_instant = eps - x # dx/dt = eps - x
+        v_instant = eps - x
         
         # CFG Drop Logic
         if args.use_cfg and torch.rand(1) < 0.1:
@@ -117,6 +126,11 @@ def train(args):
         
         loss = F.mse_loss(u_pred, target)
         loss.backward()
+        
+        # --- 修正 2: 梯度裁剪 (Gradient Clipping) ---
+        # 能够有效抑制 Loss 的漂移趋势
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
         optimizer.step()
         
         # 监控与保存
