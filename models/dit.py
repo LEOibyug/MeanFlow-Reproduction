@@ -40,20 +40,13 @@ class Attention(nn.Module):
     def forward(self, x):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv.unbind(0) # (B, Heads, N, HeadDim)
+        q, k, v = qkv.unbind(0)
 
-        # --- 核心修改：手动实现 Attention 以支持 JVP ---
-        # 牺牲一点速度，换取 MeanFlow 可运行
-        
-        # (B, H, N, D) @ (B, H, D, N) -> (B, H, N, N)
+        # Attention 计算
         attn = (q @ k.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
-        
-        # (B, H, N, N) @ (B, H, N, D) -> (B, H, N, D)
         x = (attn @ v)
-        
-        # ---------------------------------------------
 
         x = x.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
@@ -61,7 +54,6 @@ class Attention(nn.Module):
         return x
 
 class PatchEmbed(nn.Module):
-    """ 硬编码 32x32 -> 256 Patches """
     def __init__(self, img_size=32, patch_size=2, in_chans=4, embed_dim=384):
         super().__init__()
         self.img_size = img_size
@@ -71,10 +63,6 @@ class PatchEmbed(nn.Module):
         self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
 
     def forward(self, x):
-        B, C, H, W = x.shape
-        if H != self.img_size or W != self.img_size:
-             # 容错处理：如果尺寸不对，尝试动态调整（防止某些特殊的预处理错误）
-             pass 
         x = self.proj(x)
         x = x.flatten(2).transpose(1, 2)
         return x
@@ -162,8 +150,32 @@ class DiT_MeanFlow(nn.Module):
         self.initialize_weights()
 
     def initialize_weights(self):
+        # 1. 初始化位置编码
         pos_embed = torch.randn(1, self.num_patches, self.pos_embed.shape[-1]) * .02
         self.pos_embed.data.copy_(pos_embed)
+
+        # 2. 初始化所有 Linear 层 (Xavier Uniform) 和 LayerNorm
+        def _basic_init(module):
+            if isinstance(module, nn.Linear):
+                torch.nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
+        self.apply(_basic_init)
+
+        # 3. 初始化 Embedding
+        nn.init.normal_(self.y_embedder.weight, std=0.02)
+        
+        # 4. [关键] DiT Block 的 Zero-Init
+        # 确保每个 Block 在初始时是 Identity
+        for block in self.blocks:
+            nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
+            nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
+
+        # 5. [关键] Final Layer 的 Zero-Init
+        nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
+        nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
+        nn.init.constant_(self.final_layer.linear.weight, 0)
+        nn.init.constant_(self.final_layer.linear.bias, 0)
 
     def unpatchify(self, x):
         c = self.in_channels
@@ -181,17 +193,9 @@ class DiT_MeanFlow(nn.Module):
         y_emb = self.y_embedder(y)
         c = t_emb + tr_emb + y_emb 
 
-        # --- 关键修改：梯度检查点 ---
-        # 如果显存不够，PyTorch 会释放中间层的激活值，反向传播时重算
         for block in self.blocks:
-            # if self.training:
-            #     x = checkpoint(block, x, c, use_reentrant=False)
-            # else:
-            #     x = block(x, c)
             x = block(x, c)
 
-        # --------------------------
-        
         x = self.final_layer(x, c)
         x = self.unpatchify(x)
         return x

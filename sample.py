@@ -15,7 +15,7 @@ ID2LABEL = {
 }
 
 def clean_state_dict(state_dict):
-    """移除 torch.compile 产生的 _orig_mod 前缀，确保权重键名匹配"""
+    """移除 torch.compile 产生的 _orig_mod 前缀"""
     new_state_dict = {}
     for k, v in state_dict.items():
         if k.startswith("_orig_mod."):
@@ -30,13 +30,12 @@ def sample(args):
     
     print(f"Loading model from {args.ckpt}...")
     
-    # 1. 初始化模型结构 (必须与训练时一致)
+    # 1. 初始化模型 (ImageNette=10类)
     model = DiT_MeanFlow(num_classes=10).to(device)
     
     # 2. 加载权重
     try:
         ckpt = torch.load(args.ckpt, map_location=device)
-        # 兼容性处理：如果 checkpoint 保存的是整个 model 而不是 state_dict
         if isinstance(ckpt, dict) and "state_dict" in ckpt:
             state_dict = ckpt["state_dict"]
         else:
@@ -50,63 +49,76 @@ def sample(args):
 
     model.eval()
     
-    # 3. Load VAE (用于解码 Latent -> Pixel)
-    # 第一次运行会自动下载，如果已缓存则直接加载
+    # 3. Load VAE
     print("Loading VAE...")
     vae = AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-mse").to(device)
     vae.eval()
 
     # 4. 准备采样条件
-    # 生成 10 张图，对应 ImageNette 的 10 个类别
-    num_samples = 10
+    num_classes = 10
+    # 每个类别生成一张图
+    y = torch.arange(num_classes, device=device)
+    num_samples = len(y)
     
     # 初始噪声 (t=1)
     z1 = torch.randn(num_samples, 4, 32, 32, device=device) 
     
-    # 类别条件 (0, 1, 2, ... 9)
-    y = torch.arange(10, device=device)
-    
-    # 时间条件: MeanFlow 从 t=1 (噪声) 走到 r=0 (数据)
-    t = torch.ones(num_samples, device=device)   # Start time = 1.0
-    r = torch.zeros(num_samples, device=device)  # Target time = 0.0
+    # 时间条件: MeanFlow 从 t=1 (噪声) 到 r=0 (数据)
+    t = torch.ones(num_samples, device=device)
+    r = torch.zeros(num_samples, device=device)
 
-    print("Sampling (1-NFE)...")
+    print(f"Sampling (1-NFE) with CFG Scale = {args.cfg_scale}...")
+    
     with torch.no_grad():
-        # --- 核心采样公式 ---
-        # MeanFlow 预测的是平均速度 u
-        # 轨迹方程: z_r = z_t - (t - r) * u
-        # 这里: z_0 = z_1 - (1.0 - 0.0) * u = z_1 - u
+        if args.cfg_scale > 1.0:
+            # --- CFG 采样逻辑 ---
+            # 1. 构造双倍 Batch: [有条件, 无条件]
+            z_in = torch.cat([z1, z1], dim=0)
+            t_in = torch.cat([t, t], dim=0)
+            r_in = torch.cat([r, r], dim=0)
+            
+            # y_uncond 设为 10 (Null Token)
+            y_uncond = torch.ones_like(y) * num_classes 
+            y_in = torch.cat([y, y_uncond], dim=0)
+            
+            # 2. 一次前向传播
+            model_output = model(z_in, t_in, r_in, y_in)
+            
+            # 3. 拆分输出
+            u_cond, u_uncond = model_output.chunk(2, dim=0)
+            
+            # 4. CFG 引导公式: uncond + scale * (cond - uncond)
+            u = u_uncond + args.cfg_scale * (u_cond - u_uncond)
+        else:
+            # 标准采样 (无 CFG)
+            u = model(z1, t, r, y)
         
-        # 预测速度场
-        u = model(z1, t, r, y)
-        
-        # 一步更新 (Euler step)
+        # MeanFlow 核心公式: z0 = z1 - u
         z0 = z1 - u
         
-        # VAE 解码 (Latent -> Pixel)
-        # scaling factor 来自 SD 官方标准
+        # VAE 解码
         z0 = z0 / 0.18215 
         samples = vae.decode(z0).sample
 
     # 5. 后处理与保存
-    # Denormalize: [-1, 1] -> [0, 1]
     samples = (samples / 2 + 0.5).clamp(0, 1)
-    
-    # 拼图: 5列 2行
     grid = make_grid(samples, nrow=5, padding=2)
-    
-    # 转为 PIL Image 并保存
     ndarr = grid.mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to("cpu", torch.uint8).numpy()
     im = Image.fromarray(ndarr)
     
-    save_path = f"results/{args.output_name}.png"
+    save_path = f"results/{args.output_name}_cfg{args.cfg_scale}.png"
     im.save(save_path)
     print(f"Done! Result saved to: {save_path}")
-    print("Classes in order: ", [ID2LABEL[i] for i in range(10)])
+    print("Classes: ", [ID2LABEL[i] for i in range(10)])
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--ckpt", type=str, required=True, help="Path to .pth checkpoint file")
-    parser.add_argument("--output_name", type=str, default="sample_result", help="Output filename (without extension)")
+    parser.add_argument("--ckpt", type=str, required=True, help="Path to .pth checkpoint")
+    parser.add_argument("--output_name", type=str, default="sample_result", help="Output filename prefix")
+    
+    # 新增 CFG 参数
+    parser.add_argument("--cfg_scale", type=float, default=4.0, 
+                        help="Classifier-Free Guidance scale. Default=4.0. Set 1.0 to disable.")
+    
     args = parser.parse_args()
     sample(args)
