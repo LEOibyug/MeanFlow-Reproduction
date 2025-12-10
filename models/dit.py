@@ -1,4 +1,3 @@
-# models/dit.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -6,7 +5,7 @@ import numpy as np
 import math
 from torch.utils.checkpoint import checkpoint
 
-# --- 1. 基础组件 ---
+# --- 基础组件 ---
 class Mlp(nn.Module):
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
         super().__init__()
@@ -42,7 +41,6 @@ class Attention(nn.Module):
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)
 
-        # Attention 计算
         attn = (q @ k.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
@@ -70,7 +68,7 @@ class PatchEmbed(nn.Module):
 def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
-# --- 2. DiT Block & Embedding ---
+# --- DiT Block & Embedding ---
 
 class TimestepEmbedder(nn.Module):
     def __init__(self, hidden_size, frequency_embedding_size=256):
@@ -150,11 +148,9 @@ class DiT_MeanFlow(nn.Module):
         self.initialize_weights()
 
     def initialize_weights(self):
-        # 1. 初始化位置编码
         pos_embed = torch.randn(1, self.num_patches, self.pos_embed.shape[-1]) * .02
         self.pos_embed.data.copy_(pos_embed)
 
-        # 2. 初始化所有 Linear 层 (Xavier Uniform) 和 LayerNorm
         def _basic_init(module):
             if isinstance(module, nn.Linear):
                 torch.nn.init.xavier_uniform_(module.weight)
@@ -162,16 +158,12 @@ class DiT_MeanFlow(nn.Module):
                     nn.init.constant_(module.bias, 0)
         self.apply(_basic_init)
 
-        # 3. 初始化 Embedding
         nn.init.normal_(self.y_embedder.weight, std=0.02)
         
-        # 4. [关键] DiT Block 的 Zero-Init
-        # 确保每个 Block 在初始时是 Identity
         for block in self.blocks:
             nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
             nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
 
-        # 5. [关键] Final Layer 的 Zero-Init
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
         nn.init.constant_(self.final_layer.linear.weight, 0)
