@@ -40,7 +40,7 @@ MeanFlow-Reproduction/
 - `Pillow`
 - `einops`
 
-## 代码实现亮点
+## 代码功能
 
 - **`models/dit.py`**: 包含一个轻量级的 DiT 实现。一个关键的修改是其 `TimestepEmbedder`，它通过将 $(t, r)$ 两个时间变量的嵌入 $(t, t-r)$ 相加作为条件输入来处理，正如论文所建议的。
 
@@ -60,8 +60,6 @@ MeanFlow-Reproduction/
     *   打开终端 1: 运行 `bash scripts/run_exp_baseline.sh` (使用 GPU 0)
     *   打开终端 2: 运行 `bash scripts/run_exp_meanflow.sh` (使用 GPU 1)
 
-3.  **等待**: 训练过程可能需要大约 12 小时才能完成。
+3.  **验证**: 修改 `sample.py` 中的 `exp_name` 并运行它以生成和查看结果图像。
 
-4.  **验证**: 修改 `sample.py` 中的 `exp_name` 并运行它以生成和查看结果图像。
-
-尽管代码库简洁，但它严格遵循 MeanFlow 论文中的数学定义，并能够在双 A100 GPU 上复现核心 MeanFlow 效果。
+代码逻辑严格遵循 MeanFlow 论文中的数学定义
